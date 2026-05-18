@@ -1,0 +1,17 @@
+{
+  "name": "twitter-reddit-crawler",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "crawl:twitter": "node scripts/crawl_twitter_comments.mjs",
+    "crawl:twitter:batch": "node scripts/run_twitter_keyword_batch.mjs",
+    "crawl:reddit": "node scripts/crawl_reddit_comments.mjs",
+    "crawl:reddit:batch": "node scripts/run_reddit_keyword_batch.mjs",
+    "cookies:chrome": "node scripts/import_chrome_cookies.mjs",
+    "profile:clone": "node scripts/clone_chrome_profile.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.53.0"
+  }
+}
