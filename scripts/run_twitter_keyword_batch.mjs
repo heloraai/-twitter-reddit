@@ -2,7 +2,11 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ensureDir, slugify, timestampForPath } from "./utils.mjs";
+import { ensureDir, sleep, slugify, timestampForPath } from "./utils.mjs";
+
+const RESTART_EVERY = 8; // restart browser session every N keywords to avoid Twitter rate-limiting
+const COOLDOWN_NORMAL = 15; // seconds between keywords
+const COOLDOWN_RESTART = 90; // seconds at restart boundary (every RESTART_EVERY keywords)
 
 const DEFAULT_KEYWORDS = [
   "fiat onramp",
@@ -47,6 +51,7 @@ function parseArgs(argv) {
     else if (arg === "--tree-mode") args.treeMode = argv[++i];
     else if (arg === "--output-dir") args.outputDir = argv[++i];
     else if (arg === "--batch-id") args.batchId = argv[++i];
+    else if (arg === "--restart-every") args.restartEvery = Number.parseInt(argv[++i], 10);
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -87,12 +92,22 @@ function runCommand(command, args) {
 async function summarizeOutput(file) {
   try {
     const payload = JSON.parse(await fs.readFile(file, "utf8"));
+    // Count from nested posts[].replies[] tree
+    let commentCount = 0;
+    const countReplies = (replies) => {
+      for (const r of replies || []) {
+        commentCount += 1;
+        countReplies(r.replies);
+      }
+    };
+    for (const post of payload.posts || []) {
+      countReplies(post.replies);
+    }
     return {
       file,
-      items: payload.items?.length || 0,
-      parent_posts: payload.items?.filter((item) => item.record_type === "twitter_post").length || 0,
-      comments: payload.items?.filter((item) => item.record_type === "twitter_comment").length || 0,
-      threads: payload.threads?.length || 0,
+      parent_posts: payload.stats?.parent_posts || payload.posts?.length || 0,
+      comments: payload.stats?.total_comments || commentCount,
+      total_items: payload.stats?.total_items || (payload.posts?.length || 0) + commentCount,
       errors: Object.keys(payload.crawl_errors || {}).length,
     };
   } catch (error) {
@@ -110,7 +125,21 @@ async function main() {
   await ensureDir(args.outputDir);
   const summary = [];
 
+  const restartEvery = args.restartEvery || RESTART_EVERY;
+  const authDir = ".crawler-auth";
+  const authFile = path.join(authDir, "twitter.storageState.json");
+
   for (const [index, keyword] of keywords.entries()) {
+    // ── Restart boundary: clear session cookies to avoid Twitter rate-limiting ──
+    if (index > 0 && index % restartEvery === 0) {
+      console.log(`\n[batch] ⚡ restart boundary (every ${restartEvery} keywords) — clearing session & cooling down ${COOLDOWN_RESTART}s...`);
+      try {
+        await fs.unlink(authFile);
+        console.log(`[batch] cleared ${authFile}`);
+      } catch { /* file may not exist */ }
+      await sleep(COOLDOWN_RESTART * 1000);
+    }
+
     const output = path.join(args.outputDir, `${slugify(keyword)}.json`);
     console.log(`\n[batch] ${index + 1}/${keywords.length}: "${keyword}" -> ${output}`);
     const result = await runCommand(process.execPath, [
@@ -142,10 +171,18 @@ async function main() {
       ...(await summarizeOutput(output)),
     };
     summary.push(item);
-    await fs.writeFile(path.join(args.outputDir, `summary.json`), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+    await fs.writeFile(path.join(args.outputDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+
+    // ── Cooldown between keywords to avoid Twitter rate-limiting ──
+    if (index < keywords.length - 1) {
+      const cooldown = COOLDOWN_NORMAL;
+      console.log(`[batch] cooling down ${cooldown}s before next keyword...`);
+      await sleep(cooldown * 1000);
+    }
   }
 
-  console.log(`\n[batch] saved summary to ${path.join(args.outputDir, `summary.json`)}`);
+  console.log(`\n[batch] done. ${summary.length} keywords processed.`);
+  console.log(`[batch] saved summary to ${path.join(args.outputDir, "summary.json")}`);
 }
 
 main().catch((error) => {
