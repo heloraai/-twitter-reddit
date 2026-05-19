@@ -3,8 +3,8 @@
  * Generate intent_analysis.md from a folder of crawl JSON files.
  *
  * Usage:
- *   node scripts/source_crawler/generate_intent_analysis.mjs --input-dir outputs/source_crawls/banxa/reddit
- *   node scripts/source_crawler/generate_intent_analysis.mjs --input-dir outputs/source_crawls/usdgo/twitter --platform twitter
+ *   node scripts/generate_intent_analysis.mjs --input-dir outputs/source_crawls/banxa/reddit
+ *   node scripts/generate_intent_analysis.mjs --input-dir outputs/source_crawls/usdgo/twitter --platform twitter
  */
 import fs from "node:fs/promises";
 import path from "node:path";

@@ -1,6 +1,6 @@
 {
-  "name": "twitter-reddit-crawler",
-  "version": "1.0.0",
+  "name": "twitter-reddit-linkedin-crawler",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,10 +8,17 @@
     "crawl:twitter:batch": "node scripts/run_twitter_keyword_batch.mjs",
     "crawl:reddit": "node scripts/crawl_reddit_comments.mjs",
     "crawl:reddit:batch": "node scripts/run_reddit_keyword_batch.mjs",
+    "crawl:linkedin": "node scripts/crawl_linkedin_comments.mjs",
+    "crawl:linkedin:batch": "node scripts/run_linkedin_keyword_batch.mjs",
     "cookies:chrome": "node scripts/import_chrome_cookies.mjs",
-    "profile:clone": "node scripts/clone_chrome_profile.mjs"
+    "cookies:extract": "node scripts/extract_chrome_cookies.mjs",
+    "profile:clone": "node scripts/clone_chrome_profile.mjs",
+    "analyze:intent": "node scripts/generate_intent_analysis.mjs"
   },
   "dependencies": {
     "playwright": "^1.53.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.0.0"
   }
 }

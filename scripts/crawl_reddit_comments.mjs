@@ -72,7 +72,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log(`Usage:
-  node scripts/source_crawler/crawl_reddit_comments.mjs --keyword "fiat onramp"
+  node scripts/crawl_reddit_comments.mjs --keyword "fiat onramp"
 
 Options:
   --keyword, -k             Search keyword.

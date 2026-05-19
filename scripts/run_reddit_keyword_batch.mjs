@@ -55,8 +55,8 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log(`Usage:
-  node scripts/source_crawler/run_reddit_keyword_batch.mjs
-  node scripts/source_crawler/run_reddit_keyword_batch.mjs --max-posts 100
+  node scripts/run_reddit_keyword_batch.mjs
+  node scripts/run_reddit_keyword_batch.mjs --max-posts 100
 
 Options:
   --keywords              Comma-separated keyword list. Defaults to the ramp keyword set.

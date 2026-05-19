@@ -151,9 +151,9 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(`Usage:
-  node scripts/source_crawler/import_chrome_cookies.mjs
-  node scripts/source_crawler/import_chrome_cookies.mjs --profile-directory "Profile 1"
-  node scripts/source_crawler/import_chrome_cookies.mjs --sources twitter,linkedin,quora
+  node scripts/import_chrome_cookies.mjs
+  node scripts/import_chrome_cookies.mjs --profile-directory "Profile 1"
+  node scripts/import_chrome_cookies.mjs --sources twitter,linkedin,quora
 `);
     return;
   }

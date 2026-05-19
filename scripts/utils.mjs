@@ -295,6 +295,10 @@ export function makeItem(source, index, raw) {
     "replying_to_author_handles",
     "thread_position",
     "reply_depth",
+    "post_id",
+    "parent_post_id",
+    "is_reply",
+    "urn",
   ]) {
     if (raw[key] != null) item[key] = raw[key];
   }

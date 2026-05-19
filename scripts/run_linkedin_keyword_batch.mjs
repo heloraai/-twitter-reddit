@@ -4,39 +4,30 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ensureDir, sleep, slugify, timestampForPath } from "./utils.mjs";
 
-const RESTART_EVERY = 8; // restart browser session every N keywords to avoid Twitter rate-limiting
-const COOLDOWN_NORMAL = 15; // seconds between keywords
-const COOLDOWN_RESTART = 90; // seconds at restart boundary (every RESTART_EVERY keywords)
+const COOLDOWN_NORMAL = 25; // LinkedIn is stricter — longer cooldown
+const COOLDOWN_RESTART = 120;
+const RESTART_EVERY = 6;
 
 const DEFAULT_KEYWORDS = [
-  "fiat onramp",
-  "fiat offramp",
-  "crypto onramp",
-  "onramp api",
-  "embedded crypto",
-  "crypto-fiat exchange",
-  "on and off ramp",
-  "white label onramp",
-  "fiat on-ramp SDK",
-  "on-ramp API",
-  "licensed crypto on-ramp",
-  "MiCA compliant on-ramp",
-  "B2B2C ramp model",
-  "Saas model",
+  "EOR Singapore",
+  "global employment Asia",
+  "Asia payroll outsourcing",
 ];
 
 function parseArgs(argv) {
   const args = {
     keywords: DEFAULT_KEYWORDS,
-    maxPosts: 100,
-    maxCommentsPerPost: 99999,
-    searchScrolls: 160,
-    threadScrolls: 100,
-    stableRounds: 7,
-    searchMode: "top",
-    treeMode: "network",
-    outputDir: path.join("outputs", "source_crawls", "twitter_keyword_batch"),
+    maxPosts: 50,
+    maxCommentsPerPost: 200,
+    searchScrolls: 80,
+    threadScrolls: 60,
+    stableRounds: 8,
+    sortBy: "relevance",
+    datePosted: "past-year",
+    outputDir: path.join("outputs", "source_crawls", "linkedin_keyword_batch"),
     batchId: timestampForPath(),
+    restartEvery: RESTART_EVERY,
+    skipComments: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -47,11 +38,12 @@ function parseArgs(argv) {
     else if (arg === "--search-scrolls") args.searchScrolls = Number.parseInt(argv[++i], 10);
     else if (arg === "--thread-scrolls") args.threadScrolls = Number.parseInt(argv[++i], 10);
     else if (arg === "--stable-rounds") args.stableRounds = Number.parseInt(argv[++i], 10);
-    else if (arg === "--search-mode") args.searchMode = argv[++i];
-    else if (arg === "--tree-mode") args.treeMode = argv[++i];
+    else if (arg === "--sort-by") args.sortBy = argv[++i];
+    else if (arg === "--date-posted") args.datePosted = argv[++i];
     else if (arg === "--output-dir") args.outputDir = argv[++i];
     else if (arg === "--batch-id") args.batchId = argv[++i];
     else if (arg === "--restart-every") args.restartEvery = Number.parseInt(argv[++i], 10);
+    else if (arg === "--skip-comments") args.skipComments = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -60,15 +52,19 @@ function parseArgs(argv) {
 
 function printHelp() {
   console.log(`Usage:
-  node scripts/run_twitter_keyword_batch.mjs
-  node scripts/run_twitter_keyword_batch.mjs --max-posts 100
+  node scripts/run_linkedin_keyword_batch.mjs --keywords "EOR Singapore,Asia payroll" --output-dir outputs/source_crawls/hr_eor/linkedin
 
 Options:
-  --keywords              Comma-separated keyword list. Defaults to the ramp keyword set.
+  --keywords              Comma-separated keyword list.
   --keywords-file         One keyword per line.
-  --max-posts             Parent posts per keyword. Default: 100.
-  --max-comments-per-post Comments per parent post cap. Default: 500.
-  --output-dir            Output directory. Default: outputs/source_crawls/twitter_keyword_batch.
+  --max-posts             Posts per keyword. Default: 50.
+  --max-comments-per-post Comments cap per post. Default: 200.
+  --search-scrolls        Search scroll count. Default: 80.
+  --thread-scrolls        Post detail scroll count. Default: 60.
+  --sort-by               relevance or date_posted. Default: relevance.
+  --date-posted           past-24h, past-week, past-month, past-year. Default: past-year.
+  --restart-every         Pause boundary (no cookie clear since LinkedIn needs login). Default: 6.
+  --output-dir            Output directory.
 `);
 }
 
@@ -78,9 +74,9 @@ async function loadKeywords(args) {
   return raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
-function runCommand(command, args) {
+function runCommand(command, cmdArgs) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
+    const child = spawn(command, cmdArgs, {
       cwd: process.cwd(),
       stdio: "inherit",
       env: process.env,
@@ -92,7 +88,6 @@ function runCommand(command, args) {
 async function summarizeOutput(file) {
   try {
     const payload = JSON.parse(await fs.readFile(file, "utf8"));
-    // Count from nested posts[].replies[] tree
     let commentCount = 0;
     const countReplies = (replies) => {
       for (const r of replies || []) {
@@ -125,31 +120,23 @@ async function main() {
   await ensureDir(args.outputDir);
   const summary = [];
 
-  const restartEvery = args.restartEvery || RESTART_EVERY;
-  const authDir = ".crawler-auth";
-  const authFile = path.join(authDir, "twitter.storageState.json");
-
   for (const [index, keyword] of keywords.entries()) {
-    // ── Restart boundary: clear session cookies to avoid Twitter rate-limiting ──
-    if (index > 0 && index % restartEvery === 0) {
-      console.log(`\n[batch] ⚡ restart boundary (every ${restartEvery} keywords) — clearing session & cooling down ${COOLDOWN_RESTART}s...`);
-      try {
-        await fs.unlink(authFile);
-        console.log(`[batch] cleared ${authFile}`);
-      } catch { /* file may not exist */ }
+    // ── Restart boundary: longer cooldown (do NOT clear storageState — LinkedIn requires login) ──
+    if (index > 0 && index % args.restartEvery === 0) {
+      console.log(`\n[batch] ⚡ restart boundary (every ${args.restartEvery} keywords) — cooling down ${COOLDOWN_RESTART}s...`);
       await sleep(COOLDOWN_RESTART * 1000);
     }
 
     const output = path.join(args.outputDir, `${slugify(keyword)}.json`);
     console.log(`\n[batch] ${index + 1}/${keywords.length}: "${keyword}" -> ${output}`);
-    const result = await runCommand(process.execPath, [
-      "scripts/crawl_twitter_comments.mjs",
+    const childArgs = [
+      "scripts/crawl_linkedin_comments.mjs",
       "--keyword",
       keyword,
-      "--search-mode",
-      args.searchMode,
-      "--tree-mode",
-      args.treeMode,
+      "--sort-by",
+      args.sortBy,
+      "--date-posted",
+      args.datePosted,
       "--max-posts",
       String(args.maxPosts),
       "--max-comments-per-post",
@@ -162,7 +149,9 @@ async function main() {
       String(args.stableRounds),
       "--output",
       output,
-    ]);
+    ];
+    if (args.skipComments) childArgs.push("--skip-comments");
+    const result = await runCommand(process.execPath, childArgs);
     const item = {
       keyword,
       output,
@@ -173,11 +162,9 @@ async function main() {
     summary.push(item);
     await fs.writeFile(path.join(args.outputDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 
-    // ── Cooldown between keywords to avoid Twitter rate-limiting ──
     if (index < keywords.length - 1) {
-      const cooldown = COOLDOWN_NORMAL;
-      console.log(`[batch] cooling down ${cooldown}s before next keyword...`);
-      await sleep(cooldown * 1000);
+      console.log(`[batch] cooling down ${COOLDOWN_NORMAL}s before next keyword...`);
+      await sleep(COOLDOWN_NORMAL * 1000);
     }
   }
 
