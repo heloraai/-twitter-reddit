@@ -37,6 +37,8 @@ function parseArgs(argv) {
     treeMode: "network",
     outputDir: path.join("outputs", "source_crawls", "twitter_keyword_batch"),
     batchId: timestampForPath(),
+    cooldownSeconds: COOLDOWN_NORMAL,
+    headful: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -52,6 +54,8 @@ function parseArgs(argv) {
     else if (arg === "--output-dir") args.outputDir = argv[++i];
     else if (arg === "--batch-id") args.batchId = argv[++i];
     else if (arg === "--restart-every") args.restartEvery = Number.parseInt(argv[++i], 10);
+    else if (arg === "--cooldown-seconds") args.cooldownSeconds = Number.parseInt(argv[++i], 10);
+    else if (arg === "--headful") args.headful = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -69,6 +73,8 @@ Options:
   --max-posts             Parent posts per keyword. Default: 100.
   --max-comments-per-post Comments per parent post cap. Default: 500.
   --output-dir            Output directory. Default: outputs/source_crawls/twitter_keyword_batch.
+  --cooldown-seconds      Pause between keywords. Default: 15.
+  --headful               Show browser while crawling.
 `);
 }
 
@@ -142,7 +148,24 @@ async function main() {
 
     const output = path.join(args.outputDir, `${slugify(keyword)}.json`);
     console.log(`\n[batch] ${index + 1}/${keywords.length}: "${keyword}" -> ${output}`);
-    const result = await runCommand(process.execPath, [
+
+    try {
+      const existing = JSON.parse(await fs.readFile(output, "utf8"));
+      const n = existing.posts?.length || 0;
+      // Only skip if file is COMPLETE (reached max-posts target).
+      // Partial files (process killed mid-crawl) get deleted and re-crawled.
+      if (n >= args.maxPosts) {
+        console.log(`[batch] SKIP — file already complete (${n}/${args.maxPosts} posts)`);
+        summary.push({ keyword, output, skipped: true, ...(await summarizeOutput(output)) });
+        await fs.writeFile(path.join(args.outputDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+        continue;
+      } else if (n > 0) {
+        console.log(`[batch] PARTIAL — file has only ${n}/${args.maxPosts} posts, deleting and re-crawling`);
+        await fs.unlink(output);
+      }
+    } catch {}
+
+    const childArgs = [
       "scripts/crawl_twitter_comments.mjs",
       "--keyword",
       keyword,
@@ -162,7 +185,9 @@ async function main() {
       String(args.stableRounds),
       "--output",
       output,
-    ]);
+    ];
+    if (args.headful) childArgs.push("--headful");
+    const result = await runCommand(process.execPath, childArgs);
     const item = {
       keyword,
       output,
@@ -175,7 +200,7 @@ async function main() {
 
     // ── Cooldown between keywords to avoid Twitter rate-limiting ──
     if (index < keywords.length - 1) {
-      const cooldown = COOLDOWN_NORMAL;
+      const cooldown = args.cooldownSeconds;
       console.log(`[batch] cooling down ${cooldown}s before next keyword...`);
       await sleep(cooldown * 1000);
     }

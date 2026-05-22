@@ -33,6 +33,8 @@ function parseArgs(argv) {
     timeRange: "year",
     outputDir: path.join("outputs", "source_crawls", "reddit_keyword_batch"),
     batchId: timestampForPath(),
+    cooldownSeconds: 15,
+    headless: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -47,6 +49,8 @@ function parseArgs(argv) {
     else if (arg === "--time-range") args.timeRange = argv[++i];
     else if (arg === "--output-dir") args.outputDir = argv[++i];
     else if (arg === "--batch-id") args.batchId = argv[++i];
+    else if (arg === "--cooldown-seconds") args.cooldownSeconds = Number.parseInt(argv[++i], 10);
+    else if (arg === "--headless") args.headless = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -68,6 +72,8 @@ Options:
   --sort-mode             Reddit sort: relevance, hot, new, top. Default: relevance.
   --time-range            Reddit time filter: hour, day, week, month, year, all. Default: year.
   --output-dir            Output directory. Default: outputs/source_crawls/reddit_keyword_batch.
+  --cooldown-seconds      Pause between keywords. Default: 15.
+  --headless              Run crawler headless.
 `);
 }
 
@@ -117,7 +123,28 @@ async function main() {
   for (const [index, keyword] of keywords.entries()) {
     const output = path.join(args.outputDir, `${slugify(keyword)}.json`);
     console.log(`\n[batch] ${index + 1}/${keywords.length}: "${keyword}" -> ${output}`);
-    const result = await runCommand(process.execPath, [
+
+    try {
+      const existing = JSON.parse(await fs.readFile(output, "utf8"));
+      // Reddit stores items in payload.items[], filter for posts
+      const n =
+        existing.stats?.parent_posts ??
+        existing.posts?.length ??
+        (existing.items?.filter((i) => i.record_type === "reddit_post").length || 0);
+      // Only skip if file is COMPLETE (reached max-posts target).
+      // Partial files (process killed mid-crawl) get deleted and re-crawled.
+      if (n >= args.maxPosts) {
+        console.log(`[batch] SKIP — file already complete (${n}/${args.maxPosts} posts)`);
+        summary.push({ keyword, output, skipped: true, ...(await summarizeOutput(output)) });
+        await fs.writeFile(path.join(args.outputDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+        continue;
+      } else if (n > 0) {
+        console.log(`[batch] PARTIAL — file has only ${n}/${args.maxPosts} posts, deleting and re-crawling`);
+        await fs.unlink(output);
+      }
+    } catch {}
+
+    const childArgs = [
       "scripts/crawl_reddit_comments.mjs",
       "--keyword",
       keyword,
@@ -137,7 +164,9 @@ async function main() {
       String(args.stableRounds),
       "--output",
       output,
-    ]);
+    ];
+    if (args.headless) childArgs.push("--headless");
+    const result = await runCommand(process.execPath, childArgs);
     const item = {
       keyword,
       output,
@@ -150,7 +179,7 @@ async function main() {
 
     // Cooldown between keywords to avoid Reddit 429 rate limiting
     if (index < keywords.length - 1) {
-      const cooldown = 15;
+      const cooldown = args.cooldownSeconds;
       console.log(`[batch] cooling down ${cooldown}s before next keyword...`);
       await sleep(cooldown * 1000);
     }
