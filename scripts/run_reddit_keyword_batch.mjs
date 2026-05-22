@@ -120,26 +120,67 @@ async function main() {
   await ensureDir(args.outputDir);
   const summary = [];
 
+  // ── Retry state tracking (breaks infinite re-crawl loops for data-source-limited keywords) ──
+  const retryStateFile = path.join(args.outputDir, "_retry_state.json");
+  const CEILING_THRESHOLD = 2;   // require N consecutive attempts at same count
+  const CEILING_TOLERANCE = 2;   // ±N posts tolerance when comparing counts
+  const MAX_ATTEMPTS = 5;        // hard cap on retries to prevent runaway
+  const loadRetryState = async () => {
+    try { return JSON.parse(await fs.readFile(retryStateFile, "utf8")); }
+    catch { return {}; }
+  };
+  const saveRetryState = async (state) => {
+    await fs.writeFile(retryStateFile, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  };
+  const countPosts = (payload) =>
+    payload?.stats?.parent_posts ??
+    payload?.posts?.length ??
+    (payload?.items?.filter((i) => i.record_type === "reddit_post").length || 0);
+  const isAtCeiling = (history, currentCount) => {
+    if (history.length < CEILING_THRESHOLD) return false;
+    const recent = history.slice(-CEILING_THRESHOLD);
+    return recent.every((n) => Math.abs(n - currentCount) <= CEILING_TOLERANCE);
+  };
+  const retryState = await loadRetryState();
+
   for (const [index, keyword] of keywords.entries()) {
     const output = path.join(args.outputDir, `${slugify(keyword)}.json`);
     console.log(`\n[batch] ${index + 1}/${keywords.length}: "${keyword}" -> ${output}`);
 
+    const meta = retryState[keyword] || { attempts: 0, history: [], status: "pending" };
+
+    // ── If state already marked ceiling, accept silently and skip crawl ──
+    if (meta.status === "ceiling") {
+      const maxSeen = meta.history.length ? Math.max(...meta.history) : 0;
+      console.log(`[batch] CEILING — keyword permanently at data-source ceiling (best: ${maxSeen}/${args.maxPosts} over ${meta.attempts} attempts). Skipping crawl.`);
+      summary.push({ keyword, output, ceiling: true, max_posts_seen: maxSeen, attempts: meta.attempts });
+      await fs.writeFile(path.join(args.outputDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+      continue;
+    }
+
     try {
       const existing = JSON.parse(await fs.readFile(output, "utf8"));
-      // Reddit stores items in payload.items[], filter for posts
-      const n =
-        existing.stats?.parent_posts ??
-        existing.posts?.length ??
-        (existing.items?.filter((i) => i.record_type === "reddit_post").length || 0);
-      // Only skip if file is COMPLETE (reached max-posts target).
-      // Partial files (process killed mid-crawl) get deleted and re-crawled.
+      const n = countPosts(existing);
       if (n >= args.maxPosts) {
         console.log(`[batch] SKIP — file already complete (${n}/${args.maxPosts} posts)`);
+        meta.status = "complete";
+        retryState[keyword] = meta;
+        await saveRetryState(retryState);
         summary.push({ keyword, output, skipped: true, ...(await summarizeOutput(output)) });
         await fs.writeFile(path.join(args.outputDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
         continue;
       } else if (n > 0) {
-        console.log(`[batch] PARTIAL — file has only ${n}/${args.maxPosts} posts, deleting and re-crawling`);
+        if (isAtCeiling(meta.history, n) || meta.attempts >= MAX_ATTEMPTS) {
+          const reason = meta.attempts >= MAX_ATTEMPTS ? `${meta.attempts} attempts hit MAX_ATTEMPTS` : `${CEILING_THRESHOLD} attempts stuck at ~${n}`;
+          console.log(`[batch] CEILING — file at data-source ceiling (${n}/${args.maxPosts}, ${reason}). Accepting as final.`);
+          meta.status = "ceiling";
+          retryState[keyword] = meta;
+          await saveRetryState(retryState);
+          summary.push({ keyword, output, ceiling: true, max_posts_seen: n, attempts: meta.attempts, ...(await summarizeOutput(output)) });
+          await fs.writeFile(path.join(args.outputDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+          continue;
+        }
+        console.log(`[batch] PARTIAL — file has only ${n}/${args.maxPosts} posts (attempt ${meta.attempts + 1}/${MAX_ATTEMPTS}), deleting and re-crawling`);
         await fs.unlink(output);
       }
     } catch {}
@@ -167,11 +208,33 @@ async function main() {
     ];
     if (args.headless) childArgs.push("--headless");
     const result = await runCommand(process.execPath, childArgs);
+
+    // ── Update retry state with this attempt's outcome ──
+    let newCount = 0;
+    try {
+      const newPayload = JSON.parse(await fs.readFile(output, "utf8"));
+      newCount = countPosts(newPayload);
+    } catch {}
+    meta.attempts += 1;
+    meta.history.push(newCount);
+    meta.last_attempt_at = new Date().toISOString();
+    if (newCount >= args.maxPosts) {
+      meta.status = "complete";
+    } else if (isAtCeiling(meta.history, newCount) || meta.attempts >= MAX_ATTEMPTS) {
+      meta.status = "ceiling";
+      console.log(`[batch] now marked CEILING for "${keyword}" — history: [${meta.history.join(", ")}]`);
+    }
+    retryState[keyword] = meta;
+    await saveRetryState(retryState);
+
     const item = {
       keyword,
       output,
       exit_code: result.code,
       signal: result.signal,
+      attempt: meta.attempts,
+      posts_this_attempt: newCount,
+      status: meta.status,
       ...(await summarizeOutput(output)),
     };
     summary.push(item);

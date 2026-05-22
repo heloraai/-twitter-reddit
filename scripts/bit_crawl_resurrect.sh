@@ -46,12 +46,28 @@ for platform in twitter reddit; do
       continue
     fi
 
-    # 2. Are all keywords in this chunk already complete?
+    # 2. Are all keywords in this chunk already complete OR ceiling-marked?
+    state_file="${output_dir}/_retry_state.json"
     all_done=1
     while IFS= read -r kw; do
       [[ -z "${kw}" ]] && continue
       slug=$(slugify "${kw}")
       output_file="${output_dir}/${slug}.json"
+
+      # Check retry state first — keywords marked "ceiling" or "complete" are accepted as done
+      if [[ -f "${state_file}" ]]; then
+        # Pass the keyword via env var to avoid quoting/escaping hell
+        kw_status=$(KW="${kw}" STATE_FILE="${state_file}" node -e '
+          try {
+            const s = JSON.parse(require("fs").readFileSync(process.env.STATE_FILE, "utf8"));
+            console.log(s[process.env.KW]?.status || "pending");
+          } catch(e) { console.log("pending"); }
+        ' 2>/dev/null || echo pending)
+        if [[ "${kw_status}" = "ceiling" ]] || [[ "${kw_status}" = "complete" ]]; then
+          continue  # this keyword finalized — no need to crawl again
+        fi
+      fi
+
       if [[ ! -f "${output_file}" ]]; then
         all_done=0
         break
